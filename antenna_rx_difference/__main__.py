@@ -207,14 +207,16 @@ def write_files_for_counts_by_hour(nameA, nameB, tmpA, tmpB):
         k = (hour, freq,)
         v_a = dataA.get(k, 0)
         v_b = dataB.get(k, 0)
-        row.append(v_a)
-        row.append(v_b)
+        row.append('%.1f' % (v_a,))
+        row.append('%.1f' % (v_b,))
 
       fout.write(','.join(str(x) for x in row))
       fout.write("\n")
 
   with open('counts_by_hour.gnuplot', 'w') as fout:
     fout.write("set datafile separator comma\n")
+    fout.write("set datafile missing \"NaN\"\n")
+
     for i, freq in enumerate(all_freqs):
       filename = "counts_by_hour_%dHz.png" % (freq,)
       freq_human = "%.3f MHz" % (freq/(10**6.0),)
@@ -287,16 +289,24 @@ def write_maximum_distance_by_hour(rx_maidenhead, nameA, nameB, tmpA, tmpB):
       row = [datetime.datetime.utcfromtimestamp(hour).strftime(DATETIME_FORMAT_FOR_GNUPLOT)]
       for freq in all_freqs:
         k = (hour, freq,)
-        v_a = dataA.get(k, 0)
-        v_b = dataB.get(k, 0)
-        row.append('%.1f' % (v_a,))
-        row.append('%.1f' % (v_b,))
+        v_a = dataA.get(k)
+        v_b = dataB.get(k)
+        if v_a is None:
+          row.append('NaN')
+        else:
+          row.append('%.1f' % (v_a,))
+
+        if v_b is None:
+          row.append('NaN')
+        else:
+          row.append('%.1f' % (v_b,))
 
       fout.write(','.join(str(x) for x in row))
       fout.write("\n")
 
   with open('max_distance_by_hour.gnuplot', 'w') as fout:
     fout.write("set datafile separator comma\n")
+    fout.write("set datafile missing \"NaN\"\n")
     for i, freq in enumerate(all_freqs):
       filename = "max_dist_by_hour_%dHz.png" % (freq,)
       freq_human = "%.3f MHz" % (freq/(10**6.0),)
@@ -326,6 +336,7 @@ class SignalMatcher(object):
      tmpname = 'tmp.signalmatcher'
      if len(tmpname) > 3:
        for fname in glob.glob(tmpname + '*'):
+         print('removing ' + tmpname)
          os.unlink(fname)
      self.db = shelve.open(tmpname)
 
@@ -451,7 +462,6 @@ def write_comparative_snr(nameA, nameB, tmpA, tmpB):
     fout.write("set xlabel \"Hour\"\n")
     fout.write("set ylabel \"SNR above %s\"\n" % (nameA,))
 
-
     fout.write("set xdata time\n")
     fout.write(GNUPLOT_TIMEFMT_HRS)
     fout.write(GNUPLOT_X_FORMAT_HRS)
@@ -479,6 +489,18 @@ rx_gridsquare = 'EM10dk'
 write_files_for_counts_by_hour(nameA, nameB, tmpA, tmpB)
 write_maximum_distance_by_hour(rx_gridsquare, nameA, nameB, tmpA, tmpB)
 write_comparative_snr(nameA, nameB, tmpA, tmpB)
+
+# Signals RX'd by A, but not by B - by heading - split day/night
+# Signals RX'd by B, but not by A - by heading - split day/night
+# probably use this https://matplotlib.org/3.2.2/gallery/pie_and_polar_charts/polar_bar.html#sphx-glr-gallery-pie-and-polar-charts-polar-bar-py
+
+# RX counts / density by heading - split day/night
+# probably use this https://matplotlib.org/3.2.2/gallery/pie_and_polar_charts/polar_bar.html#sphx-glr-gallery-pie-and-polar-charts-polar-bar-py
+
+# relative SNR by heading & distance - split day/night
+# maybe we can use this to generate the appropriate plot by using one color for negative and one color positive SNR differences
+# https://matplotlib.org/3.2.2/gallery/pie_and_polar_charts/polar_scatter.html#sphx-glr-gallery-pie-and-polar-charts-polar-scatter-py
+# the size of the circle indicates the magnitude
 
 
 tmpA.close()
