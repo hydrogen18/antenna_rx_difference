@@ -577,12 +577,12 @@ def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance
 
   x_coords = [i * degrees_per_division for i in range(divisions)]
   x_coords_radians = [ x/180.0 * math.pi for x in x_coords]
-  x_coords_radians = x_coords_radians + x_coords_radians
+#  x_coords_radians = x_coords_radians + x_coords_radians
   widths_radians = [degrees_per_division/180.0 * math.pi for _ in range(divisions)]
-  widths_radians = widths_radians + widths_radians
+#  widths_radians = widths_radians + widths_radians
   colorsA = [GNUPLOT_COLORS[0] for _ in range(divisions)]
   colorsB = [GNUPLOT_COLORS[1] for _ in range(divisions)]
-  all_colors = colorsA + colorsB
+#  all_colors = colorsA + colorsB
   all_freqs = set()
   [all_freqs.add(x) for x in counts_by_freqA.keys()]
   [all_freqs.add(x) for x in counts_by_freqB.keys()]
@@ -601,9 +601,12 @@ def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance
     
     ax.set_theta_zero_location('N')
     ax.set_theta_direction(-1)
-    ax.bar(x_coords_radians, heights, color = all_colors, width = widths_radians, bottom = 0.0, alpha = 0.67)
+    ax.bar(x_coords_radians, heightsA, color = colorsA, width = widths_radians, bottom = 0.0, alpha = 0.67, label = nameA)
+    ax.bar(x_coords_radians, heightsB, color = colorsB, width = widths_radians, bottom = 0.0, alpha = 0.67, label = nameB)
+    ax.legend(bbox_to_anchor=(1.1,0.5), loc="center left", borderaxespad=0)
+
     fname = 'rx_count_by_heading_%dHz.png' % (freq,)
-    plt.savefig(fname, format = 'png', dpi = 150)
+    plt.savefig(fname, format = 'png', dpi = 150, bbox_inches = 'tight')
 
 station_locator = StationLocator()
 for obj in itertools.chain(*(read_object_sequence(x) for x in (tmpA, tmpB,))):
