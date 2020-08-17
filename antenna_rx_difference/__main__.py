@@ -253,8 +253,8 @@ def write_files_for_counts_by_hour(nameA, nameB, tmpA, tmpB):
       fout.write("set grid\n")
 
       # TODO colors that aren't boring
-      fout.write("plot \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"black\" title \"%s\", \\\n" % (csv_filename, a_column_idx + 1, nameA,))
-      fout.write("     \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"red\" title \"%s\"\n" % (csv_filename, b_column_idx + 1, nameB,))
+      fout.write("plot \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"%s\" title \"%s\", \\\n" % (csv_filename, a_column_idx + 1,GNUPLOT_COLORS[0], nameA,))
+      fout.write("     \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"%s\" title \"%s\"\n" % (csv_filename, b_column_idx + 1, GNUPLOT_COLORS[1], nameB,))
       fout.write("\n")
 
 
@@ -348,8 +348,8 @@ def write_maximum_distance_by_hour(rx_maidenhead, station_locator, nameA, nameB,
       fout.write("set grid\n")
 
       # TODO colors that aren't boring
-      fout.write("plot \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"black\" title \"%s\", \\\n" % (csv_filename, a_column_idx + 1, nameA,))
-      fout.write("     \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"red\" title \"%s\"\n" % (csv_filename, b_column_idx + 1, nameB,))
+      fout.write("plot \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"%s\" title \"%s\", \\\n" % (csv_filename, a_column_idx + 1,GNUPLOT_COLORS[0], nameA,))
+      fout.write("     \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"%s\" title \"%s\"\n" % (csv_filename, b_column_idx + 1, GNUPLOT_COLORS[1], nameB,))
       fout.write("\n")
 
 class StationLocator(object):
@@ -567,6 +567,7 @@ def rx_counts_by_heading(divisions, degrees_per_division, rx_gridsquare, station
     counts[div] += 1
 
   return counts_by_freq
+
 def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, inputA, inputB):
   divisions = 45
   degrees_per_division = 360.0/divisions
@@ -600,7 +601,7 @@ def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance
     
     ax.set_theta_zero_location('N')
     ax.set_theta_direction(-1)
-    ax.bar(x_coords_radians, heights, color = all_colors, width = widths_radians, bottom = 0.0, alpha = 0.44)
+    ax.bar(x_coords_radians, heights, color = all_colors, width = widths_radians, bottom = 0.0, alpha = 0.67)
     fname = 'rx_count_by_heading_%dHz.png' % (freq,)
     plt.savefig(fname, format = 'png', dpi = 150)
 
