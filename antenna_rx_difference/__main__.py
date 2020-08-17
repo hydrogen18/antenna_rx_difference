@@ -26,7 +26,7 @@ import geopy.distance
 
 import maidenhead
 
-GNUPLOT_COLORS = ['black', 'red', 'purple', 'blue', 'green']
+GNUPLOT_COLORS = ['#00e673', '#e62e00', 'purple', '#4d4dff', '#2eb8b8']
 
 MAIDENHEAD_REGEX = re.compile('^[A-Z]{2}[0-9]{2}$')
 
@@ -539,12 +539,10 @@ def filter_signals_distance(rx_gridsquare, station_locator, minimum_distance_km,
     if dist_km >= minimum_distance_km:
       yield obj
 
-def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance_km, name, fin):
+def rx_counts_by_heading(divisions, degrees_per_division, rx_gridsquare, station_locator, minimum_distance_km, fin):
   rx_lat, rx_lon = maidenhead.to_location(rx_gridsquare)
   gds = pyproj.Geod(ellps = 'WGS84')
-  divisions = 45
-  degrees_per_division = 360.0/divisions
-
+  
   counts_by_freq = {} 
 
   for obj in filter_signals_distance(rx_gridsquare, station_locator, minimum_distance_km, fin):
@@ -567,23 +565,43 @@ def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance
  
     div = int(math.floor(fwd/degrees_per_division))
     counts[div] += 1
-  
+
+  return counts_by_freq
+def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, inputA, inputB):
+  divisions = 45
+  degrees_per_division = 360.0/divisions
+
+  counts_by_freqA = rx_counts_by_heading(divisions, degrees_per_division, rx_gridsquare, station_locator, minimum_distance_km, inputA)
+  counts_by_freqB = rx_counts_by_heading(divisions, degrees_per_division, rx_gridsquare, station_locator, minimum_distance_km, inputB)
+
   x_coords = [i * degrees_per_division for i in range(divisions)]
   x_coords_radians = [ x/180.0 * math.pi for x in x_coords]
+  x_coords_radians = x_coords_radians + x_coords_radians
   widths_radians = [degrees_per_division/180.0 * math.pi for _ in range(divisions)]
+  widths_radians = widths_radians + widths_radians
+  colorsA = [GNUPLOT_COLORS[0] for _ in range(divisions)]
+  colorsB = [GNUPLOT_COLORS[1] for _ in range(divisions)]
+  all_colors = colorsA + colorsB
+  all_freqs = set()
+  [all_freqs.add(x) for x in counts_by_freqA.keys()]
+  [all_freqs.add(x) for x in counts_by_freqB.keys()]
 
-  for freq, counts in counts_by_freq.items():
-    heights = [y[1] for y in sorted(counts.items(), key = lambda x : x[0])]
+  for freq in all_freqs: 
+    countsA = counts_by_freqA[freq]
+    heightsA = [y[1] for y in sorted(countsA.items(), key = lambda x : x[0])]
+    countsB = counts_by_freqB[freq]
+    heightsB = [y[1] for y in sorted(countsB.items(), key = lambda x : x[0])]
+    heights = heightsA + heightsB
 
     freq_human = '%.3f' % (freq/10**6.0)
-    title = "%s (%s MHz)" % (name, freq_human)
+    title = "Signals received by heading (%s MHz)" % (freq_human,)
     ax = plt.subplot(111, projection = 'polar', title = title)
     ax.set_title(title)
     
     ax.set_theta_zero_location('N')
     ax.set_theta_direction(-1)
-    ax.bar(x_coords_radians, heights, width = widths_radians, bottom = 0.0, alpha = 0.5)
-    fname = 'rx_count_by_heading_%s_%dHz.png' % (name, freq,)
+    ax.bar(x_coords_radians, heights, color = all_colors, width = widths_radians, bottom = 0.0, alpha = 0.44)
+    fname = 'rx_count_by_heading_%dHz.png' % (freq,)
     plt.savefig(fname, format = 'png', dpi = 150)
 
 station_locator = StationLocator()
@@ -598,7 +616,7 @@ for obj in itertools.chain(*(read_object_sequence(x) for x in (tmpA, tmpB,))):
 rx_gridsquare = 'EM10dk'
 minimum_distance_km = 350.0
 
-write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, tmpA)
+write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, tmpA, tmpB)
 write_files_for_counts_by_hour(nameA, nameB, tmpA, tmpB)
 write_maximum_distance_by_hour(rx_gridsquare, station_locator, nameA, nameB, tmpA, tmpB)
 write_comparative_snr(nameA, nameB, tmpA, tmpB)
