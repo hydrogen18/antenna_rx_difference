@@ -11,10 +11,15 @@ import json
 import os
 import shelve
 import glob
+import math
 
 from astropy.coordinates import EarthLocation
 import astropy.units as u
 from astroplan import Observer
+
+import pyproj
+import numpy as np
+import matplotlib.pyplot as plt
 
 import geopy
 import geopy.distance
@@ -24,6 +29,8 @@ import maidenhead
 GNUPLOT_COLORS = ['black', 'red', 'purple', 'blue', 'green']
 
 MAIDENHEAD_REGEX = re.compile('^[A-Z]{2}[0-9]{2}$')
+
+CALLSIGN_REGEX = re.compile('^[A-Z,0-9]{3,}')
 
 class SignalObservation(object):
   __slots__ = ('ts', 'freq', 'direction', 'mode', 'snr', 'freq_offset', 'msg',)
@@ -38,6 +45,15 @@ class SignalObservation(object):
 
   def __hash__(self):
     return hash((self.ts, self.freq,  self.msg,))   
+
+  def get_tx_station(self):
+    data = self.msg.split(' ')
+    if len(data) < 3:
+      return
+    callsign = data[1]
+    if CALLSIGN_REGEX.match(callsign) is None:
+      return
+    return callsign
 
   def get_maidenhead(self):
     data = self.msg.split(' ')
@@ -242,17 +258,23 @@ def write_files_for_counts_by_hour(nameA, nameB, tmpA, tmpB):
       fout.write("\n")
 
 
-def maximum_distance_by_hour(rx_maidenhead, fin):
+def maximum_distance_by_hour(rx_maidenhead, station_locator, fin):
   rx_coords = maidenhead.to_location(rx_maidenhead)
   data = {}
   for obj in read_object_sequence(fin):
     loc = obj.get_maidenhead()
     if loc is None:   
-      continue
+      callsign = obj.get_tx_station()
+      if callsign is None:
+        continue # no callsign, skip it
+      loc = station_locator.lookup(callsign)
+      if loc is None: # still no location, skip it
+        continue 
     if len(loc) == 4:
       loc = loc + 'mm' # pick the middle
 
     tx_coords = maidenhead.to_location(loc)
+    # TODO switch to pyproj
     dist_km = geopy.distance.great_circle(rx_coords, tx_coords).km
     unix_ts = truncate_ts_to_hour_unix(obj.ts)
     k = (unix_ts, obj.freq,)
@@ -262,12 +284,11 @@ def maximum_distance_by_hour(rx_maidenhead, fin):
       data[k] = dist_km
   return data
     
-def write_maximum_distance_by_hour(rx_maidenhead, nameA, nameB, tmpA, tmpB):
-  dataA = maximum_distance_by_hour(rx_maidenhead, tmpA)
-  dataB = maximum_distance_by_hour(rx_maidenhead, tmpB)
+def write_maximum_distance_by_hour(rx_maidenhead, station_locator, nameA, nameB, tmpA, tmpB):
+  dataA = maximum_distance_by_hour(rx_maidenhead, station_locator, tmpA)
+  dataB = maximum_distance_by_hour(rx_maidenhead, station_locator, tmpB)
   all_hours, all_freqs = find_all_hours_and_freqs(dataA, dataB)
    
-
   csv_filename = 'max_distance_by_hour.csv'
   with open(csv_filename, 'w') as fout:
     fout.write("# input file A: %s\n" % (nameA,))
@@ -330,6 +351,21 @@ def write_maximum_distance_by_hour(rx_maidenhead, nameA, nameB, tmpA, tmpB):
       fout.write("plot \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"black\" title \"%s\", \\\n" % (csv_filename, a_column_idx + 1, nameA,))
       fout.write("     \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"red\" title \"%s\"\n" % (csv_filename, b_column_idx + 1, nameB,))
       fout.write("\n")
+
+class StationLocator(object):
+  def __init__(self): 
+    tmpname = 'tmp.stationlocation'
+    if len(tmpname) > 3:
+       for fname in glob.glob(tmpname + '*'):
+         print('removing ' + tmpname)
+         os.unlink(fname)
+    self.db = shelve.open(tmpname)
+
+  def insert(self, callsign, gridsquare):
+    self.db[callsign] = gridsquare
+
+  def lookup(self, callsign):
+    return self.db.get(callsign)
 
 class SignalMatcher(object):
   def __init__(self):
@@ -454,7 +490,7 @@ def write_comparative_snr(nameA, nameB, tmpA, tmpB):
   with open('comparative_snr_by_hour.gnuplot', 'w') as fout:
     fout.write("set datafile separator comma\n")
     fout.write("set datafile missing \"NaN\"\n")
-    
+    # TODO - put a line at 0 on the Y axis
     filename = "comparative_snr_by_hour.png" 
     fout.write("set terminal pngcairo font \"Arial, 16\" size 1920, 1080\n")
     fout.write("set output \"%s\"\n" % (filename,))
@@ -482,22 +518,99 @@ def write_comparative_snr(nameA, nameB, tmpA, tmpB):
         fout.write(", \\")
       fout.write("\n")
 
+def filter_signals_distance(rx_gridsquare, station_locator, minimum_distance_km, fin):
+  rx_coords = maidenhead.to_location(rx_gridsquare)
+  for obj in read_object_sequence(fin):
+    callsign = obj.get_tx_station()
 
+    if callsign is None:
+      continue
+    loc = station_locator.lookup(callsign)
+
+    if loc is None:
+      continue # no location known, skip it
+
+    if len(loc) == 4:
+      loc = loc + 'mm'
+    tx_coords = maidenhead.to_location(loc)
+    # TODO switch to pyproj
+    dist_km = geopy.distance.great_circle(rx_coords, tx_coords).km
+
+    if dist_km >= minimum_distance_km:
+      yield obj
+
+def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance_km, name, fin):
+  rx_lat, rx_lon = maidenhead.to_location(rx_gridsquare)
+  gds = pyproj.Geod(ellps = 'WGS84')
+  divisions = 45
+  degrees_per_division = 360.0/divisions
+
+  counts_by_freq = {} 
+
+  for obj in filter_signals_distance(rx_gridsquare, station_locator, minimum_distance_km, fin):
+    loc = station_locator.lookup(obj.get_tx_station())
+    tx_lat, tx_lon = maidenhead.to_location(loc)
+    # TODO - figure out if this is great circle route
+    fwd, back, dist = gds.inv(rx_lon, rx_lat, tx_lon, tx_lat)
+  
+    # interval is [-180.0, 180], add if negative so the range of values is 0-360.0
+    if fwd < 0.0:
+      fwd += 360.0
+
+    freq = obj.freq 
+
+#    print("%.3f ; %.3f ; %.3f" % (fwd, back, dist,))
+    counts = counts_by_freq.get(freq)
+    if counts is None:
+      counts = { div: 0 for div in range(divisions) } # fill in zeroes
+      counts_by_freq[freq] = counts
+ 
+    div = int(math.floor(fwd/degrees_per_division))
+    counts[div] += 1
+  
+  x_coords = [i * degrees_per_division for i in range(divisions)]
+  x_coords_radians = [ x/180.0 * math.pi for x in x_coords]
+  widths_radians = [degrees_per_division/180.0 * math.pi for _ in range(divisions)]
+
+  for freq, counts in counts_by_freq.items():
+    heights = [y[1] for y in sorted(counts.items(), key = lambda x : x[0])]
+
+    freq_human = '%.3f' % (freq/10**6.0)
+    title = "%s (%s MHz)" % (name, freq_human)
+    ax = plt.subplot(111, projection = 'polar', title = title)
+    ax.set_title(title)
+    
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+    ax.bar(x_coords_radians, heights, width = widths_radians, bottom = 0.0, alpha = 0.5)
+    fname = 'rx_count_by_heading_%s_%dHz.png' % (name, freq,)
+    plt.savefig(fname, format = 'png', dpi = 150)
+
+station_locator = StationLocator()
+for obj in itertools.chain(*(read_object_sequence(x) for x in (tmpA, tmpB,))):
+  callsign = obj.get_tx_station()
+  if callsign is not None:    
+    station_location = obj.get_maidenhead()
+    if station_location is not None:
+#      print("%s => %s" % (callsign, station_location,))
+      station_locator.insert(callsign, station_location)
 
 rx_gridsquare = 'EM10dk'
- 
+minimum_distance_km = 350.0
+
+write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, tmpA)
 write_files_for_counts_by_hour(nameA, nameB, tmpA, tmpB)
-write_maximum_distance_by_hour(rx_gridsquare, nameA, nameB, tmpA, tmpB)
+write_maximum_distance_by_hour(rx_gridsquare, station_locator, nameA, nameB, tmpA, tmpB)
 write_comparative_snr(nameA, nameB, tmpA, tmpB)
 
-# Signals RX'd by A, but not by B - by heading - split day/night
-# Signals RX'd by B, but not by A - by heading - split day/night
+# Signals RX'd by A, but not by B - by heading - split day/night - exclude groundwave
+# Signals RX'd by B, but not by A - by heading - split day/night - exclude groundwave
 # probably use this https://matplotlib.org/3.2.2/gallery/pie_and_polar_charts/polar_bar.html#sphx-glr-gallery-pie-and-polar-charts-polar-bar-py
 
-# RX counts / density by heading - split day/night
+# RX counts / density by heading - split day/night - exclude groundwave
 # probably use this https://matplotlib.org/3.2.2/gallery/pie_and_polar_charts/polar_bar.html#sphx-glr-gallery-pie-and-polar-charts-polar-bar-py
 
-# relative SNR by heading & distance - split day/night
+# relative SNR by heading & distance - split day/night - exclude groundwave
 # maybe we can use this to generate the appropriate plot by using one color for negative and one color positive SNR differences
 # https://matplotlib.org/3.2.2/gallery/pie_and_polar_charts/polar_scatter.html#sphx-glr-gallery-pie-and-polar-charts-polar-scatter-py
 # the size of the circle indicates the magnitude
