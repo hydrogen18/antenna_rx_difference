@@ -365,6 +365,8 @@ class StationLocator(object):
     self.db[callsign] = gridsquare
 
   def lookup(self, callsign):
+    if callsign is None:
+      return
     return self.db.get(callsign)
 
 class SignalMatcher(object):
@@ -415,20 +417,12 @@ class SignalMatcher(object):
                     match = { cat: entry, other_cat: other_entry }
                     yield match
                   
-def write_comparative_snr(nameA, nameB, tmpA, tmpB):
-  sm = SignalMatcher()
-
-  sample_cnt = 0
-  for obj in read_object_sequence(tmpA):
-    sm.insert(nameA, obj)   
-
-  for obj in read_object_sequence(tmpB):
-    sm.insert(nameB, obj)
-
+def write_comparative_snr(signal_matcher, nameA, nameB):
   snr_sums = {}
   
   all_hours = set()
   all_freqs = set()
+  sample_cnt = 0
   for m in sm.generate_matches():
     sample_cnt += 1
     a = m[nameA]
@@ -548,7 +542,7 @@ def rx_counts_by_heading(divisions, degrees_per_division, rx_gridsquare, station
   for obj in filter_signals_distance(rx_gridsquare, station_locator, minimum_distance_km, fin):
     loc = station_locator.lookup(obj.get_tx_station())
     tx_lat, tx_lon = maidenhead.to_location(loc)
-    # TODO - figure out if this is great circle route
+    # this appears to compute a great circle route
     fwd, back, dist = gds.inv(rx_lon, rx_lat, tx_lon, tx_lat)
   
     # interval is [-180.0, 180], add if negative so the range of values is 0-360.0
@@ -577,12 +571,12 @@ def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance
 
   x_coords = [i * degrees_per_division for i in range(divisions)]
   x_coords_radians = [ x/180.0 * math.pi for x in x_coords]
-#  x_coords_radians = x_coords_radians + x_coords_radians
+
   widths_radians = [degrees_per_division/180.0 * math.pi for _ in range(divisions)]
-#  widths_radians = widths_radians + widths_radians
+
   colorsA = [GNUPLOT_COLORS[0] for _ in range(divisions)]
   colorsB = [GNUPLOT_COLORS[1] for _ in range(divisions)]
-#  all_colors = colorsA + colorsB
+
   all_freqs = set()
   [all_freqs.add(x) for x in counts_by_freqA.keys()]
   [all_freqs.add(x) for x in counts_by_freqB.keys()]
@@ -608,6 +602,108 @@ def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance
     fname = 'rx_count_by_heading_%dHz.png' % (freq,)
     plt.savefig(fname, format = 'png', dpi = 150, bbox_inches = 'tight')
 
+def write_comparative_snr_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, sm):
+  rx_lat, rx_lon = maidenhead.to_location(rx_gridsquare)
+  gds = pyproj.Geod(ellps = 'WGS84')
+  divisions = 45
+  degrees_per_division = 360.0/divisions
+
+  snr_sums = {}  
+  all_freqs = set()
+  sample_cnt = 0
+
+  for m in sm.generate_matches():
+    sample_cnt += 1
+
+    a = m[nameA]
+    b = m[nameB]
+
+    snr_diff = b.snr - a.snr
+    all_freqs.add(a.freq)
+
+    loc = station_locator.lookup(a.get_tx_station())
+    if loc is None:
+      continue
+    tx_lat, tx_lon = maidenhead.to_location(loc)
+    # this appears to compute a great circle route
+    fwd, back, dist = gds.inv(rx_lon, rx_lat, tx_lon, tx_lat)
+  
+    # skip anything too close
+    if dist/1000.0 < minimum_distance_km:
+      pass#continue
+  
+    # interval is [-180.0, 180], add if negative so the range of values is 0-360.0
+    if fwd < 0.0:
+      fwd += 360.0
+
+    freq = a.freq 
+
+    div = int(math.floor(fwd/degrees_per_division))
+    k = (freq, div,)
+
+    v = snr_sums.get(k)
+#    print("adding sample to %r" % (k,))
+    if v is None:
+      v = [0, 0.0] # 0 samples, value of 0 by default
+
+    v[0] += 1
+    v[1] += snr_diff
+
+    snr_sums[k] = v
+
+  snr_means = {}
+  for freq in all_freqs:
+    for div in range(divisions):
+      v = snr_sums.get((freq, div,))
+#      print("(%r, %r,) => %r" % (freq, div, v,))
+      if v is None:
+        snr_means[(freq,div,)] = 0.0
+      else:
+        cnt = v[0]
+        total = v[1]
+        mean = total/cnt
+        snr_means[(freq, div,)] = mean
+
+  x_coords = [i * degrees_per_division for i in range(divisions)]
+  x_coords_radians = [ x/180.0 * math.pi for x in x_coords]
+
+  widths_radians = [degrees_per_division/180.0 * math.pi for _ in range(divisions)]
+
+  for freq in all_freqs:
+    colors = []
+    heights = []
+    for div in range(divisions):
+      mean_snr_diff = snr_means[(freq, div,)]
+      if mean_snr_diff > 0.0:
+        colors.append('green')
+      else:
+        colors.append('red')
+      heights.append(abs(mean_snr_diff))  
+
+    freq_human = '%.3f' % (freq/10**6.0)
+    title = "Average relative SNR by heading (%s MHz)" % (freq_human,)
+#    print(title)
+#    print(heights)
+    ax = plt.subplot(111, projection = 'polar', title = title)
+    ax.set_title(title)
+    
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+    label = "%s above %s" % (nameB, nameA,)
+    ax.bar(x_coords_radians, heights, color = colors, width = widths_radians, bottom = 0.0, alpha = 0.95, label = label)
+    ax.legend(bbox_to_anchor=(1.1,0.5), loc="center left", borderaxespad=0)
+
+    fname = 'comparative_snr_by_heading_%dHz.png' % (freq,)
+    plt.savefig(fname, format = 'png', dpi = 150, bbox_inches = 'tight')
+  
+sm = SignalMatcher()
+
+for obj in read_object_sequence(tmpA):
+  sm.insert(nameA, obj)   
+
+for obj in read_object_sequence(tmpB):
+  sm.insert(nameB, obj)
+
 station_locator = StationLocator()
 for obj in itertools.chain(*(read_object_sequence(x) for x in (tmpA, tmpB,))):
   callsign = obj.get_tx_station()
@@ -620,10 +716,11 @@ for obj in itertools.chain(*(read_object_sequence(x) for x in (tmpA, tmpB,))):
 rx_gridsquare = 'EM10dk'
 minimum_distance_km = 350.0
 
+write_comparative_snr_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, sm)
 write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, tmpA, tmpB)
 write_files_for_counts_by_hour(nameA, nameB, tmpA, tmpB)
 write_maximum_distance_by_hour(rx_gridsquare, station_locator, nameA, nameB, tmpA, tmpB)
-write_comparative_snr(nameA, nameB, tmpA, tmpB)
+write_comparative_snr(sm, nameA, nameB)
 
 # Signals RX'd by A, but not by B - by heading - split day/night - exclude groundwave
 # Signals RX'd by B, but not by A - by heading - split day/night - exclude groundwave
