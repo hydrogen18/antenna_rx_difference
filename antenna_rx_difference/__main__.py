@@ -21,9 +21,6 @@ import pyproj
 import numpy as np
 import matplotlib.pyplot as plt
 
-import geopy
-import geopy.distance
-
 import maidenhead
 
 GNUPLOT_COLORS = ['#00e673', '#e62e00', 'purple', '#4d4dff', '#2eb8b8']
@@ -252,14 +249,15 @@ def write_files_for_counts_by_hour(nameA, nameB, tmpA, tmpB):
       fout.write(GNUPLOT_X_FORMAT_HRS)
       fout.write("set grid\n")
 
-      # TODO colors that aren't boring
       fout.write("plot \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"%s\" title \"%s\", \\\n" % (csv_filename, a_column_idx + 1,GNUPLOT_COLORS[0], nameA,))
       fout.write("     \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"%s\" title \"%s\"\n" % (csv_filename, b_column_idx + 1, GNUPLOT_COLORS[1], nameB,))
       fout.write("\n")
 
 
 def maximum_distance_by_hour(rx_maidenhead, station_locator, fin):
-  rx_coords = maidenhead.to_location(rx_maidenhead)
+  rx_lat, rx_lon = maidenhead.to_location(rx_gridsquare)
+  gds = pyproj.Geod(ellps = 'WGS84')
+
   data = {}
   for obj in read_object_sequence(fin):
     loc = obj.get_maidenhead()
@@ -273,9 +271,10 @@ def maximum_distance_by_hour(rx_maidenhead, station_locator, fin):
     if len(loc) == 4:
       loc = loc + 'mm' # pick the middle
 
-    tx_coords = maidenhead.to_location(loc)
-    # TODO switch to pyproj
-    dist_km = geopy.distance.great_circle(rx_coords, tx_coords).km
+    tx_lat, tx_lon = maidenhead.to_location(loc)
+    _, _, dist_m = gds.inv(rx_lon, rx_lat, tx_lon, tx_lat)
+    dist_km = dist_m / 1000.0
+
     unix_ts = truncate_ts_to_hour_unix(obj.ts)
     k = (unix_ts, obj.freq,)
 
@@ -347,7 +346,6 @@ def write_maximum_distance_by_hour(rx_maidenhead, station_locator, nameA, nameB,
       fout.write(GNUPLOT_X_FORMAT_HRS)
       fout.write("set grid\n")
 
-      # TODO colors that aren't boring
       fout.write("plot \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"%s\" title \"%s\", \\\n" % (csv_filename, a_column_idx + 1,GNUPLOT_COLORS[0], nameA,))
       fout.write("     \"%s\" using 1:%d with linespoints lw 3 pt 7 ps 2 lc rgb \"%s\" title \"%s\"\n" % (csv_filename, b_column_idx + 1, GNUPLOT_COLORS[1], nameB,))
       fout.write("\n")
@@ -377,6 +375,7 @@ class SignalMatcher(object):
          print('removing ' + tmpname)
          os.unlink(fname)
      self.db = shelve.open(tmpname)
+     self.freq_tolerance = 100
 
   def insert(self, cat, obj):
     k = '%x' % hash(obj)
@@ -391,10 +390,19 @@ class SignalMatcher(object):
     sub_v.append(obj)
     self.db[k] = v
 
+  def generate_differential(self):
+    for is_match, v in self.separate_signals():
+      if not is_match:
+        yield v
   def generate_matches(self):
-    freq_tolerance = 100
+    for is_match, v in self.separate_signals():
+      if is_match:
+        yield v
+
+  def separate_signals(self):
     for k in self.db.keys():
       matched = set()
+      differential = []
 
       data_for_k = self.db[k]
       
@@ -403,6 +411,7 @@ class SignalMatcher(object):
         entries = data_for_k[cat]
         
         for i, entry in enumerate(entries):
+          matched_once = False
           # Search every other entry for matches
           for other_cat in categories:
             if other_cat == cat:
@@ -410,12 +419,16 @@ class SignalMatcher(object):
             for j, other_entry in enumerate(data_for_k[other_cat]):
               if entry.mode == other_entry.mode and other_entry.freq == other_entry.freq and other_entry.ts == other_entry.ts and entry.msg == other_entry.msg:
                 freq_offset_delta = abs(entry.freq_offset - other_entry.freq_offset)
-                if freq_offset_delta < freq_tolerance: # two receivers may not indicate the same freq offset exactly
+                if freq_offset_delta < self.freq_tolerance: # two receivers may not indicate the same freq offset exactly
                   match_k = tuple(sorted( [ (cat, i,), (other_cat, j,) ]))
                   if match_k not in matched:
                     matched.add(match_k)
                     match = { cat: entry, other_cat: other_entry }
-                    yield match
+                    matched_once = True
+                    yield (True, match)
+          if not matched_once:
+            yield (False, (cat, entry,))
+
                   
 def write_comparative_snr(signal_matcher, nameA, nameB):
   snr_sums = {}
@@ -512,8 +525,10 @@ def write_comparative_snr(signal_matcher, nameA, nameB):
         fout.write(", \\")
       fout.write("\n")
 
-def filter_signals_distance(rx_gridsquare, station_locator, minimum_distance_km, fin):
-  rx_coords = maidenhead.to_location(rx_gridsquare)
+def filter_signals_distance(rx_gridsquare, station_locator, minimum_distance_km, gds, fin):
+
+
+  rx_lat, rx_lon = maidenhead.to_location(rx_gridsquare)
   for obj in read_object_sequence(fin):
     callsign = obj.get_tx_station()
 
@@ -526,9 +541,10 @@ def filter_signals_distance(rx_gridsquare, station_locator, minimum_distance_km,
 
     if len(loc) == 4:
       loc = loc + 'mm'
-    tx_coords = maidenhead.to_location(loc)
-    # TODO switch to pyproj
-    dist_km = geopy.distance.great_circle(rx_coords, tx_coords).km
+
+    tx_lat, tx_lon = maidenhead.to_location(loc)
+    _, _, dist_m = gds.inv(rx_lon, rx_lat, tx_lon, tx_lat)
+    dist_km = dist_m / 1000.0
 
     if dist_km >= minimum_distance_km:
       yield obj
@@ -539,7 +555,7 @@ def rx_counts_by_heading(divisions, degrees_per_division, rx_gridsquare, station
   
   counts_by_freq = {} 
 
-  for obj in filter_signals_distance(rx_gridsquare, station_locator, minimum_distance_km, fin):
+  for obj in filter_signals_distance(rx_gridsquare, station_locator, minimum_distance_km, gds, fin):
     loc = station_locator.lookup(obj.get_tx_station())
     tx_lat, tx_lon = maidenhead.to_location(loc)
     # this appears to compute a great circle route
@@ -602,7 +618,71 @@ def write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance
     fname = 'rx_count_by_heading_%dHz.png' % (freq,)
     plt.savefig(fname, format = 'png', dpi = 150, bbox_inches = 'tight')
 
+def write_differential_rx_count_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, sm):
+  rx_lat, rx_lon = maidenhead.to_location(rx_gridsquare)
+  gds = pyproj.Geod(ellps = 'WGS84')
+  divisions = 45
+  degrees_per_division = 360.0/divisions
+
+  all_freqs = set()
+  sample_cnt = 0
+  counts = {}
+
+  for cat, entry in sm.generate_differential():
+    sample_cnt += 1
+
+    loc = station_locator.lookup(entry.get_tx_station())
+    if loc is None:
+      continue
+    tx_lat, tx_lon = maidenhead.to_location(loc)
+    # this appears to compute a great circle route
+    fwd, back, dist = gds.inv(rx_lon, rx_lat, tx_lon, tx_lat)
+  
+    # skip anything too close
+    if dist/1000.0 < minimum_distance_km:
+      continue
+
+    if fwd < 0.0:
+      fwd += 360.0
+
+    div = int(math.floor(fwd/degrees_per_division))
+    k = (cat, entry.freq, div,)
+    v = counts.get(k, 0)
+    all_freqs.add(entry.freq)
+    counts[k] = v + 1
+
+
+  colors = [GNUPLOT_COLORS[0] for _ in range(divisions)]
+  x_coords = [i * degrees_per_division for i in range(divisions)]
+  x_coords_radians = [ x/180.0 * math.pi for x in x_coords]
+  widths_radians = [degrees_per_division/180.0 * math.pi for _ in range(divisions)]
+
+
+  for freq in all_freqs:
+    freq_human = '%.3f' % (freq/10**6.0)
+    for cat in (nameA, nameB):
+      heights = []
+      for div in range(divisions):
+        cnt = counts.get((cat, freq, div,), 0)
+        heights.append(cnt)
+
+      title = "Signal count received only by %s (%s MHz)" % (cat, freq_human,)
+      ax = plt.subplot(111, projection = 'polar', title = title)
+      ax.set_title(title)
+      
+      ax.set_theta_zero_location('N')
+      ax.set_theta_direction(-1)
+      label = "Count"
+      ax.bar(x_coords_radians, heights, color = colors, width = widths_radians, bottom = 0.0, alpha = 0.95, label = label)
+#      ax.legend(bbox_to_anchor=(1.1,0.5), loc="center left", borderaxespad=0)
+
+      fname = 'differential_count_by_heading_%s_%dHz.png' % (cat, freq,)
+      plt.savefig(fname, format = 'png', dpi = 150, bbox_inches = 'tight')
+
+
 def write_comparative_snr_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, sm):
+  # TODO - filter headings with less than 3 signals (configurable value?)
+  # TODO - draw headings with no signals as a gray bar
   rx_lat, rx_lon = maidenhead.to_location(rx_gridsquare)
   gds = pyproj.Geod(ellps = 'WGS84')
   divisions = 45
@@ -630,7 +710,7 @@ def write_comparative_snr_by_heading(rx_gridsquare, station_locator, minimum_dis
   
     # skip anything too close
     if dist/1000.0 < minimum_distance_km:
-      pass#continue
+      continue
   
     # interval is [-180.0, 180], add if negative so the range of values is 0-360.0
     if fwd < 0.0:
@@ -661,8 +741,12 @@ def write_comparative_snr_by_heading(rx_gridsquare, station_locator, minimum_dis
       else:
         cnt = v[0]
         total = v[1]
-        mean = total/cnt
+        if cnt >= 3:
+          mean = total/cnt
+        else:
+          mean = 0
         snr_means[(freq, div,)] = mean
+    
 
   x_coords = [i * degrees_per_division for i in range(divisions)]
   x_coords_radians = [ x/180.0 * math.pi for x in x_coords]
@@ -675,9 +759,9 @@ def write_comparative_snr_by_heading(rx_gridsquare, station_locator, minimum_dis
     for div in range(divisions):
       mean_snr_diff = snr_means[(freq, div,)]
       if mean_snr_diff > 0.0:
-        colors.append('green')
+        colors.append(GNUPLOT_COLORS[0])
       else:
-        colors.append('red')
+        colors.append(GNUPLOT_COLORS[1])
       heights.append(abs(mean_snr_diff))  
 
     freq_human = '%.3f' % (freq/10**6.0)
@@ -714,8 +798,9 @@ for obj in itertools.chain(*(read_object_sequence(x) for x in (tmpA, tmpB,))):
       station_locator.insert(callsign, station_location)
 
 rx_gridsquare = 'EM10dk'
-minimum_distance_km = 350.0
+minimum_distance_km = 175.0
 
+write_differential_rx_count_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, sm)
 write_comparative_snr_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, sm)
 write_rx_density_by_heading(rx_gridsquare, station_locator, minimum_distance_km, nameA, nameB, tmpA, tmpB)
 write_files_for_counts_by_hour(nameA, nameB, tmpA, tmpB)
