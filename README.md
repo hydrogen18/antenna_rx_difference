@@ -6,5 +6,5 @@ It is in a usable state, but fairly rough at the moment. I may improve upon it f
 ## Example usage
 
 ```
-python antenna_rx_difference antenna_0_wsjtx.txt antenna_1_wsjtx.txt
+python -m antenna_rx_difference antenna_0_wsjtx.txt antenna_1_wsjtx.txt
 ```
